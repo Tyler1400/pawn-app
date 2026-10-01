@@ -98,6 +98,8 @@ const state = {
   gunItemName: "",
   gunNotes: "",
   gunRetail: "",
+  gunLookupState: "idle", // idle | loading | found | error | manual
+  gunMatchName: null,
   spot: null, // { gold, silver, updatedAt }
   spotLoading: false,
   spotError: false,
@@ -526,7 +528,7 @@ function gunsScreen() {
   if (state.gunsStep === "form") {
     html += `
       <div style="margin-bottom:14px;">
-        <div class="label">Item</div>
+        <div class="label">Manufacturer &amp; model</div>
         <input id="gunItemNameInput" value="${state.gunItemName}" placeholder="e.g. Taurus G2C" />
       </div>
       <div style="margin-bottom:14px;">
@@ -534,13 +536,37 @@ function gunsScreen() {
         <input id="gunNotesInput" value="${state.gunNotes}" placeholder="e.g. light holster wear" />
       </div>
       <div style="margin-bottom:10px;">
-        <div class="label">New retail price (Academy, Bass Pro, etc.)</div>
-        <div style="position:relative;">
+        <div class="label">New retail price</div>
+    `;
+
+    if (state.gunLookupState === "idle") {
+      html += `<button id="gunLookupBtn" class="ghost-btn" ${!state.gunItemName.trim() ? "disabled" : ""}>Look up retail price</button>`;
+    } else if (state.gunLookupState === "loading") {
+      html += `<div class="ghost-btn" style="text-align:center;"><span class="spin">⟳</span> Checking Academy...</div>`;
+    } else if (state.gunLookupState === "error") {
+      html += `<div style="color:var(--red); font-size:12px; margin-bottom:8px;">Couldn't reach the retail price service. Enter the price manually below, or try again.</div>
+        <button id="gunRetryBtn" class="ghost-btn" style="margin-bottom:10px;">Retry lookup</button>`;
+    } else if (state.gunLookupState === "found" && !state.gunMatchName) {
+      html += `<div style="color:var(--amber); font-size:12px; margin-bottom:8px;">No match found at Academy. Enter the price manually below.</div>`;
+    }
+
+    if (state.gunLookupState === "found" || state.gunLookupState === "error" || state.gunLookupState === "manual") {
+      html += `
+        <div style="position:relative; margin-top:8px;">
           <span style="position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--text-dim); font-size:16px; font-weight:700;">$</span>
           <input id="gunRetailInput" value="${state.gunRetail}" placeholder="0" inputmode="decimal" style="padding-left:26px; font-size:18px; font-weight:700;" />
         </div>
-      </div>
-    `;
+      `;
+    }
+    if (state.gunLookupState === "found" && state.gunMatchName) {
+      html += `<div style="font-size:11px; color:var(--text-faint); margin-top:6px;">Matched: ${state.gunMatchName} — confirm this is the right item. <button id="gunRefreshBtn" style="background:none; border:none; color:var(--red); font-size:11px; font-weight:600; padding:0;">Re-search</button></div>`;
+    }
+    if (state.gunLookupState === "manual") {
+      html += `<div style="font-size:11px; color:var(--text-faint); margin-top:6px;">Entered manually.</div>`;
+    }
+
+    html += `</div>`;
+
     if (retail > 0) {
       html += `
         <div style="display:flex; justify-content:space-between; margin-bottom:22px; padding:0 2px;">
@@ -716,6 +742,41 @@ function render() {
     ${navbar()}
   `;
   attachHandlers();
+}
+
+async function handleGunLookup() {
+  if (!state.gunItemName.trim()) return;
+  if (!state.apiUrl.trim()) {
+    state.showSettings = true;
+    render();
+    return;
+  }
+  state.gunLookupState = "loading";
+  state.gunMatchName = null;
+  render();
+  try {
+    const base = state.apiUrl.replace(/\/+$/, "");
+    const res = await fetch(`${base}/api/gun-retail?q=${encodeURIComponent(state.gunItemName.trim())}`);
+    const data = await res.json();
+    if (!res.ok) {
+      state.gunLookupState = "error";
+      render();
+      return;
+    }
+    if (!data.found) {
+      state.gunLookupState = "found"; // no match, but not an error - prompts manual entry
+      state.gunMatchName = null;
+      state.gunRetail = "";
+      render();
+      return;
+    }
+    state.gunRetail = String(data.retail);
+    state.gunMatchName = data.name;
+    state.gunLookupState = "found";
+  } catch (e) {
+    state.gunLookupState = "error";
+  }
+  render();
 }
 
 async function handleLookup() {
@@ -1002,6 +1063,7 @@ function attachHandlers() {
   const gunItemNameInput = document.getElementById("gunItemNameInput");
   if (gunItemNameInput) {
     gunItemNameInput.oninput = (e) => { state.gunItemName = e.target.value; };
+    gunItemNameInput.onblur = () => render(); // enables/disables the lookup button
   }
 
   const gunNotesInput = document.getElementById("gunNotesInput");
@@ -1009,12 +1071,22 @@ function attachHandlers() {
     gunNotesInput.oninput = (e) => { state.gunNotes = e.target.value; };
   }
 
+  const gunLookupBtn = document.getElementById("gunLookupBtn");
+  if (gunLookupBtn) gunLookupBtn.onclick = handleGunLookup;
+
+  const gunRetryBtn = document.getElementById("gunRetryBtn");
+  if (gunRetryBtn) gunRetryBtn.onclick = handleGunLookup;
+
+  const gunRefreshBtn = document.getElementById("gunRefreshBtn");
+  if (gunRefreshBtn) gunRefreshBtn.onclick = handleGunLookup;
+
   const gunRetailInput = document.getElementById("gunRetailInput");
   if (gunRetailInput) {
     gunRetailInput.oninput = (e) => {
       const cleaned = e.target.value.replace(/[^0-9.]/g, "");
       if (cleaned !== e.target.value) e.target.value = cleaned;
       state.gunRetail = cleaned;
+      state.gunLookupState = "manual";
     };
     gunRetailInput.onblur = () => render(); // refreshes the sell-price preview line
   }
@@ -1067,6 +1139,8 @@ function resetGunItem() {
   state.gunNotes = "";
   state.gunRetail = "";
   state.gunsStep = "form";
+  state.gunLookupState = "idle";
+  state.gunMatchName = null;
 }
 
 render();
