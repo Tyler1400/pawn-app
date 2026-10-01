@@ -94,6 +94,10 @@ const state = {
   showSettings: false,
   ebayStep: "form",
   jewelryStep: "menu", // menu | scrap | sellable
+  gunsStep: "form", // form | offers
+  gunItemName: "",
+  gunNotes: "",
+  gunRetail: "",
   spot: null, // { gold, silver, updatedAt }
   spotLoading: false,
   spotError: false,
@@ -165,6 +169,15 @@ const DIAMOND_TIERS = [
 // Up to and including this weight, price per point by quality tier.
 // Above it, switch to manual Rapaport-wholesale entry.
 const RAPAPORT_THRESHOLD_CT = 1.0;
+
+// Guns: sell price = new retail price (looked up at Academy, Bass Pro,
+// etc.) x 0.8. Offer is a percentage of that sell price - same
+// low/mid/high shape as eBay, so staff can lean toward "high" for a
+// nicer gun, same as they already do elsewhere in the app.
+const GUN_SELL_MULTIPLIER = 0.8;
+const GUN_LOW_PCT = 0.35;
+const GUN_MID_PCT = 0.5;
+const GUN_HIGH_PCT = 0.7;
 const ICON_SETTINGS = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>`;
 
 function header() {
@@ -208,7 +221,7 @@ function homeScreen() {
       html += `<div class="card" style="display:flex; align-items:center; gap:12px; padding:12px 14px;">
         <div style="flex:1; min-width:0;">
           <div style="color:var(--text); font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${h.itemName}</div>
-          <div style="color:var(--text-faint); font-size:11px; margin-top:2px;">${h.date} · ${h.category} · eBay ${fmt(h.ebayValue)}</div>
+          <div style="color:var(--text-faint); font-size:11px; margin-top:2px;">${h.date} · ${h.category} · base ${fmt(h.ebayValue)}</div>
         </div>
         <div style="font-size:13px; font-weight:700; color:var(--red);">${fmt(h.low)}–${fmt(h.high)}</div>
       </div>`;
@@ -504,6 +517,63 @@ function recomputeSellableTotals() {
   if (totalEl) totalEl.textContent = fmt(total);
 }
 
+function gunsScreen() {
+  const retail = parseFloat(state.gunRetail) || 0;
+  const sellPrice = retail * GUN_SELL_MULTIPLIER;
+  const low = sellPrice * GUN_LOW_PCT, mid = sellPrice * GUN_MID_PCT, high = sellPrice * GUN_HIGH_PCT;
+  let html = `<div style="padding:20px 20px 32px;">`;
+
+  if (state.gunsStep === "form") {
+    html += `
+      <div style="margin-bottom:14px;">
+        <div class="label">Item</div>
+        <input id="gunItemNameInput" value="${state.gunItemName}" placeholder="e.g. Taurus G2C" />
+      </div>
+      <div style="margin-bottom:14px;">
+        <div class="label">Condition notes</div>
+        <input id="gunNotesInput" value="${state.gunNotes}" placeholder="e.g. light holster wear" />
+      </div>
+      <div style="margin-bottom:10px;">
+        <div class="label">New retail price (Academy, Bass Pro, etc.)</div>
+        <div style="position:relative;">
+          <span style="position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--text-dim); font-size:16px; font-weight:700;">$</span>
+          <input id="gunRetailInput" value="${state.gunRetail}" placeholder="0" inputmode="decimal" style="padding-left:26px; font-size:18px; font-weight:700;" />
+        </div>
+      </div>
+    `;
+    if (retail > 0) {
+      html += `
+        <div style="display:flex; justify-content:space-between; margin-bottom:22px; padding:0 2px;">
+          <div style="font-size:12px; color:var(--text-faint);">Sell price (retail × ${GUN_SELL_MULTIPLIER})</div>
+          <div style="font-size:14px; font-weight:700; color:var(--text);">${fmt(sellPrice)}</div>
+        </div>
+      `;
+    } else {
+      html += `<div style="margin-bottom:22px;"></div>`;
+    }
+    html += `<button id="getGunOffersBtn" class="primary-btn" ${!retail ? "disabled" : ""}>Get offers →</button>`;
+  } else {
+    html += `
+      <div style="margin-bottom:20px;">
+        <div style="color:var(--text); font-size:15px; font-weight:700;">${state.gunItemName || "Untitled item"}</div>
+        <div style="color:var(--text-faint); font-size:12px; margin-top:2px;">Retail ${fmt(retail)} · Sell price ${fmt(sellPrice)}</div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:12px; margin-bottom:22px;">
+        ${offerCard("Low offer", "tight margin, quick turn", 35, low, "var(--red)", "var(--red-dim)")}
+        ${offerCard("Mid offer", "standard counter offer", 50, mid, "var(--amber)", "var(--amber-dim)")}
+        ${offerCard("High offer", "high-demand or like-new", 70, high, "var(--green)", "var(--green-dim)")}
+      </div>
+      <div style="display:flex; gap:10px;">
+        <button id="editGunBtn" style="flex:1; background:var(--surface); border:1px solid var(--border); color:var(--text); padding:13px 0; font-size:13px; font-weight:600; border-radius:10px;">Edit</button>
+        <button id="saveGunBtn" class="primary-btn" style="flex:2;">Save item</button>
+      </div>
+      <button id="discardGunBtn" style="width:100%; background:transparent; border:none; color:var(--text-faint); padding:12px 0 0; font-size:12px;">Discard, start new item</button>
+    `;
+  }
+  html += `</div>`;
+  return html;
+}
+
 function comingSoonScreen(name, icon) {
   return `
     <div style="padding:60px 30px; text-align:center;">
@@ -632,7 +702,7 @@ function render() {
   let mainHtml = "";
   if (state.view === "home") mainHtml = homeScreen();
   else if (state.view === "ebay") mainHtml = ebayScreen();
-  else if (state.view === "guns") mainHtml = comingSoonScreen("Gun", ICON_GUN);
+  else if (state.view === "guns") mainHtml = gunsScreen();
   else if (state.view === "jewelry") {
     if (state.jewelryStep === "menu") mainHtml = jewelryMenuScreen();
     else if (state.jewelryStep === "scrap") mainHtml = scrapJewelryScreen();
@@ -823,6 +893,9 @@ function attachHandlers() {
       if (b.dataset.view === "ebay" && state.ebayStep === "offers") {
         resetItem();
       }
+      if (b.dataset.view === "guns" && state.gunsStep === "offers") {
+        resetGunItem();
+      }
       if (b.dataset.view === "jewelry" && state.view === "jewelry") {
         state.jewelryStep = "menu";
       }
@@ -838,6 +911,7 @@ function attachHandlers() {
       state.jewelryStep = "menu";
     } else {
       resetItem();
+      resetGunItem();
       state.view = "home";
     }
     render();
@@ -924,6 +998,58 @@ function attachHandlers() {
 
   const discardBtn = document.getElementById("discardBtn");
   if (discardBtn) discardBtn.onclick = () => { resetItem(); render(); };
+
+  const gunItemNameInput = document.getElementById("gunItemNameInput");
+  if (gunItemNameInput) {
+    gunItemNameInput.oninput = (e) => { state.gunItemName = e.target.value; };
+  }
+
+  const gunNotesInput = document.getElementById("gunNotesInput");
+  if (gunNotesInput) {
+    gunNotesInput.oninput = (e) => { state.gunNotes = e.target.value; };
+  }
+
+  const gunRetailInput = document.getElementById("gunRetailInput");
+  if (gunRetailInput) {
+    gunRetailInput.oninput = (e) => {
+      const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+      if (cleaned !== e.target.value) e.target.value = cleaned;
+      state.gunRetail = cleaned;
+    };
+    gunRetailInput.onblur = () => render(); // refreshes the sell-price preview line
+  }
+
+  const getGunOffersBtn = document.getElementById("getGunOffersBtn");
+  if (getGunOffersBtn) getGunOffersBtn.onclick = () => {
+    const retail = parseFloat(state.gunRetail) || 0;
+    if (!retail) return;
+    state.gunsStep = "offers";
+    render();
+  };
+
+  const editGunBtn = document.getElementById("editGunBtn");
+  if (editGunBtn) editGunBtn.onclick = () => { state.gunsStep = "form"; render(); };
+
+  const saveGunBtn = document.getElementById("saveGunBtn");
+  if (saveGunBtn) saveGunBtn.onclick = () => {
+    const retail = parseFloat(state.gunRetail) || 0;
+    const sellPrice = retail * GUN_SELL_MULTIPLIER;
+    state.history.unshift({
+      itemName: state.gunItemName || "Untitled item",
+      category: "Gun",
+      ebayValue: sellPrice,
+      low: sellPrice * GUN_LOW_PCT,
+      mid: sellPrice * GUN_MID_PCT,
+      high: sellPrice * GUN_HIGH_PCT,
+      date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    });
+    resetGunItem();
+    state.view = "home";
+    render();
+  };
+
+  const discardGunBtn = document.getElementById("discardGunBtn");
+  if (discardGunBtn) discardGunBtn.onclick = () => { resetGunItem(); render(); };
 }
 
 function resetItem() {
@@ -934,6 +1060,13 @@ function resetItem() {
   state.ebayStep = "form";
   state.lookupState = "idle";
   state.compsCount = null;
+}
+
+function resetGunItem() {
+  state.gunItemName = "";
+  state.gunNotes = "";
+  state.gunRetail = "";
+  state.gunsStep = "form";
 }
 
 render();
