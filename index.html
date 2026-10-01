@@ -163,6 +163,9 @@ const DIAMOND_TIERS = [
   { key: "perfect", label: "Near perfect", rate: 6 },
 ];
 const RAPAPORT_THRESHOLD_CT = 0.75;
+// Above this, the app won't even offer a manual-entry field - too
+// large to price with a quick formula, needs a real appraisal.
+const STONE_MAX_CT = 1.0;
 const ICON_SETTINGS = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>`;
 
 function header() {
@@ -355,12 +358,25 @@ async function loadSpotPrices() {
 
 function stoneRow(stone) {
   const carats = parseFloat(stone.carats) || 0;
-  const needsRapaport = carats >= RAPAPORT_THRESHOLD_CT;
+  const tooBig = carats > STONE_MAX_CT;
+  const needsRapaport = !tooBig && carats >= RAPAPORT_THRESHOLD_CT;
   let tierButtons = "";
   DIAMOND_TIERS.forEach((t) => {
     const active = stone.tier === t.key;
     tierButtons += `<button class="stoneTierBtn" data-stone="${stone.id}" data-tier="${t.key}" style="flex:1; padding:8px 0; font-size:11px; font-weight:700; border-radius:8px; border:1px solid ${active ? "var(--red)" : "var(--border)"}; background:${active ? "var(--red-dim)" : "var(--surface-2)"}; color:${active ? "var(--red)" : "var(--text-dim)"};">${t.label}</button>`;
   });
+
+  let bodyHtml;
+  if (tooBig) {
+    bodyHtml = `<div style="font-size:12px; color:var(--red); background:var(--red-dim); border-radius:8px; padding:10px 12px; margin-bottom:0;">Can't price stones over ${STONE_MAX_CT}ct here - this one needs a manual appraisal.</div>`;
+  } else if (needsRapaport) {
+    bodyHtml = `
+      <div style="font-size:11px; color:var(--amber); margin-bottom:8px;">0.75ct-${STONE_MAX_CT}ct - look up on Rapaport, enter the value below</div>
+      <input class="stoneManualValue" data-stone="${stone.id}" value="${stone.manualValue}" placeholder="Rapaport value ($)" inputmode="decimal" style="font-size:14px; margin-bottom:10px;" />
+    `;
+  } else {
+    bodyHtml = `<div style="display:flex; gap:6px; margin-bottom:10px;">${tierButtons}</div>`;
+  }
 
   return `
     <div class="card" data-stone-row="${stone.id}" style="margin-bottom:10px;">
@@ -372,16 +388,13 @@ function stoneRow(stone) {
         <input class="stoneCarats" data-stone="${stone.id}" value="${stone.carats}" placeholder="Carat weight, e.g. 0.10" inputmode="decimal" style="font-size:14px; flex:2;" />
         <input class="stoneQty" data-stone="${stone.id}" value="${stone.qty}" placeholder="Qty" inputmode="numeric" style="font-size:14px; flex:1; text-align:center;" />
       </div>
-      ${needsRapaport ? `
-        <div style="font-size:11px; color:var(--amber); margin-bottom:8px;">0.75ct+ - look up on Rapaport, enter the value below</div>
-        <input class="stoneManualValue" data-stone="${stone.id}" value="${stone.manualValue}" placeholder="Rapaport value ($)" inputmode="decimal" style="font-size:14px; margin-bottom:10px;" />
-      ` : `
-        <div style="display:flex; gap:6px; margin-bottom:10px;">${tierButtons}</div>
-      `}
-      <div style="display:flex; justify-content:space-between; align-items:center;">
+      ${bodyHtml}
+      ${tooBig ? "" : `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
         <div style="font-size:11px; color:var(--text-faint);">value${(parseInt(stone.qty, 10) || 1) > 1 ? ` (×${stone.qty})` : ""}</div>
         <div id="sv_${stone.id}" style="font-size:16px; font-weight:800; color:var(--text);">$0</div>
       </div>
+      `}
     </div>
   `;
 }
@@ -462,6 +475,7 @@ function sellableScreen() {
 function computeStoneValue(stone) {
   const carats = parseFloat(stone.carats) || 0;
   const qty = parseInt(stone.qty, 10) || 1;
+  if (carats > STONE_MAX_CT) return 0;
   let perStone;
   if (carats >= RAPAPORT_THRESHOLD_CT) {
     perStone = parseFloat(stone.manualValue) || 0;
@@ -766,16 +780,17 @@ function attachHandlers() {
       const id = parseInt(input.dataset.stone, 10);
       const stone = state.sellable.stones.find((s) => s.id === id);
       if (!stone) return;
-      const crossedThreshold =
-        (parseFloat(stone.carats) || 0) < RAPAPORT_THRESHOLD_CT &&
-        (parseFloat(cleaned) || 0) >= RAPAPORT_THRESHOLD_CT;
-      const crossedBack =
-        (parseFloat(stone.carats) || 0) >= RAPAPORT_THRESHOLD_CT &&
-        (parseFloat(cleaned) || 0) < RAPAPORT_THRESHOLD_CT;
+      function modeFor(ct) {
+        if (ct > STONE_MAX_CT) return "blocked";
+        if (ct >= RAPAPORT_THRESHOLD_CT) return "manual";
+        return "tier";
+      }
+      const oldMode = modeFor(parseFloat(stone.carats) || 0);
+      const newMode = modeFor(parseFloat(cleaned) || 0);
       stone.carats = cleaned;
-      if (crossedThreshold || crossedBack) {
-        // Switches between tier buttons and manual-value input, so the
-        // row needs to be redrawn rather than just recomputed.
+      if (oldMode !== newMode) {
+        // Swaps between tier buttons, manual-value input, or the
+        // blocked message, so the row needs to be redrawn.
         render();
       } else {
         recomputeSellableTotals();
