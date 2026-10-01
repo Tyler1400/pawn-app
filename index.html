@@ -97,6 +97,9 @@ const state = {
   spot: null, // { gold, silver, updatedAt }
   spotLoading: false,
   spotError: false,
+  sellable: { metal: null, weightDwt: "", stones: [] },
+  showMetalSettings: false,
+  stoneIdCounter: 0,
   lookupState: "idle",
   compsCount: null,
   history: [],
@@ -127,6 +130,39 @@ const SILVER_TIERS = [
   { key: "925", label: "925 (Sterling)", factor: 0.75 },
   { key: "999", label: "999 (Fine)", factor: 0.87 },
 ];
+
+// Sellable (retail resale) pricing: flat $/DWT by metal, and flat
+// $/point (1 point = 0.01ct) for diamonds under 0.75ct. 0.75ct+ stones
+// go to Rapaport wholesale, which isn't a free public data source, so
+// those get entered manually.
+const SELLABLE_METALS = [
+  { key: "10k", label: "10kt Gold", rate: 135 },
+  { key: "14k", label: "14kt Gold", rate: 180 },
+  { key: "18k", label: "18kt Gold", rate: 230 },
+  { key: "22k", label: "22kt Gold", rate: 280 },
+  { key: "plat", label: "Platinum", rate: 100 },
+  { key: "silver", label: "Silver", rate: 7 },
+];
+// Editable base prices, so staff can update them every six months
+// without touching code. Falls back to the defaults above until
+// something's been saved.
+let sellableRates = {};
+SELLABLE_METALS.forEach((m) => { sellableRates[m.key] = m.rate; });
+try {
+  const savedRates = JSON.parse(localStorage.getItem("pawn_sellable_rates") || "{}");
+  Object.assign(sellableRates, savedRates);
+} catch (e) {}
+
+function saveMetalRates(newRates) {
+  Object.assign(sellableRates, newRates);
+  localStorage.setItem("pawn_sellable_rates", JSON.stringify(sellableRates));
+}
+const DIAMOND_TIERS = [
+  { key: "cloudy", label: "Cloudy", rate: 1 },
+  { key: "decent", label: "Decent", rate: 4 },
+  { key: "perfect", label: "Near perfect", rate: 6 },
+];
+const RAPAPORT_THRESHOLD_CT = 0.75;
 const ICON_SETTINGS = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>`;
 
 function header() {
@@ -317,6 +353,145 @@ async function loadSpotPrices() {
   render();
 }
 
+function stoneRow(stone) {
+  const carats = parseFloat(stone.carats) || 0;
+  const needsRapaport = carats >= RAPAPORT_THRESHOLD_CT;
+  let tierButtons = "";
+  DIAMOND_TIERS.forEach((t) => {
+    const active = stone.tier === t.key;
+    tierButtons += `<button class="stoneTierBtn" data-stone="${stone.id}" data-tier="${t.key}" style="flex:1; padding:8px 0; font-size:11px; font-weight:700; border-radius:8px; border:1px solid ${active ? "var(--red)" : "var(--border)"}; background:${active ? "var(--red-dim)" : "var(--surface-2)"}; color:${active ? "var(--red)" : "var(--text-dim)"};">${t.label}</button>`;
+  });
+
+  return `
+    <div class="card" data-stone-row="${stone.id}" style="margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <div style="font-size:12px; color:var(--text-dim); font-weight:600;">Stone</div>
+        <button data-remove-stone="${stone.id}" style="background:none; border:none; color:var(--text-faint); font-size:12px;">Remove</button>
+      </div>
+      <div style="margin-bottom:10px;">
+        <input class="stoneCarats" data-stone="${stone.id}" value="${stone.carats}" placeholder="Carat weight, e.g. 0.10" inputmode="decimal" style="font-size:14px;" />
+      </div>
+      ${needsRapaport ? `
+        <div style="font-size:11px; color:var(--amber); margin-bottom:8px;">0.75ct+ - look up on Rapaport, enter the value below</div>
+        <input class="stoneManualValue" data-stone="${stone.id}" value="${stone.manualValue}" placeholder="Rapaport value ($)" inputmode="decimal" style="font-size:14px; margin-bottom:10px;" />
+      ` : `
+        <div style="display:flex; gap:6px; margin-bottom:10px;">${tierButtons}</div>
+      `}
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:11px; color:var(--text-faint);">value</div>
+        <div id="sv_${stone.id}" style="font-size:16px; font-weight:800; color:var(--text);">$0</div>
+      </div>
+    </div>
+  `;
+}
+
+function metalRatesSettingsPanel() {
+  let html = `<div class="card" style="margin-bottom:20px;">`;
+  html += `<div style="font-weight:700; font-size:13px; color:var(--text); margin-bottom:4px;">Edit base metal prices</div>`;
+  html += `<div style="font-size:11px; color:var(--text-faint); margin-bottom:14px;">What you pay per DWT when selling. Update every 6 months or whenever prices change.</div>`;
+  SELLABLE_METALS.forEach((m) => {
+    html += `
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+        <div style="flex:1; font-size:12px; color:var(--text-dim); font-weight:600;">${m.label}</div>
+        <div style="position:relative; width:110px;">
+          <span style="position:absolute; left:10px; top:50%; transform:translateY(-50%); color:var(--text-dim); font-size:13px;">$</span>
+          <input class="metalRateInput" data-metal="${m.key}" value="${sellableRates[m.key]}" inputmode="decimal" style="padding-left:20px; text-align:right; font-size:13px;" />
+        </div>
+      </div>
+    `;
+  });
+  html += `<button id="saveMetalRatesBtn" class="primary-btn" style="margin-top:8px;">Save prices</button>`;
+  html += `</div>`;
+  return html;
+}
+
+function sellableScreen() {
+  const s = state.sellable;
+  let html = `<div style="padding:20px 20px 32px;">`;
+
+  html += `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <div class="label" style="margin-bottom:0;">Metal</div>
+      <button id="metalSettingsBtn" aria-label="Edit metal prices" style="width:30px; height:30px; border-radius:8px; background:var(--surface); border:1px solid var(--border); color:var(--text-dim); display:flex; align-items:center; justify-content:center;">${ICON_SETTINGS}</button>
+    </div>
+  `;
+
+  if (state.showMetalSettings) {
+    html += metalRatesSettingsPanel();
+  }
+
+  html += `<div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:20px;">`;
+  SELLABLE_METALS.forEach((m) => {
+    const active = s.metal === m.key;
+    html += `<button class="metalBtn" data-metal="${m.key}" style="padding:12px; text-align:left; border-radius:10px; border:1px solid ${active ? "var(--red)" : "var(--border)"}; background:${active ? "var(--red-dim)" : "var(--surface)"};">
+      <div style="font-size:12px; font-weight:700; color:${active ? "var(--red)" : "var(--text)"};">${m.label}</div>
+      <div style="font-size:11px; color:var(--text-faint); margin-top:2px;">$${sellableRates[m.key]}/DWT</div>
+    </button>`;
+  });
+  html += `</div>`;
+
+  if (s.metal) {
+    const metalDef = SELLABLE_METALS.find((m) => m.key === s.metal);
+    html += `
+      <div style="margin-bottom:22px;">
+        <div class="label">Weight (DWT)</div>
+        <input id="sellableWeight" value="${s.weightDwt}" placeholder="0" inputmode="decimal" />
+        <div style="display:flex; justify-content:space-between; margin-top:8px;">
+          <div style="font-size:11px; color:var(--text-faint);">${metalDef.label} value</div>
+          <div id="metalValue" style="font-size:14px; font-weight:700; color:var(--text);">$0</div>
+        </div>
+      </div>
+    `;
+  }
+
+  html += `<div class="label">Stones</div>`;
+  s.stones.forEach((stone) => { html += stoneRow(stone); });
+  html += `<button id="addStoneBtn" class="ghost-btn" style="margin-bottom:20px;">+ Add stone</button>`;
+
+  html += `
+    <div class="card" style="display:flex; justify-content:space-between; align-items:center; border-color:var(--red);">
+      <div style="font-weight:700; font-size:14px; color:var(--text);">Total value</div>
+      <div id="sellableTotal" style="font-size:28px; font-weight:800; color:var(--red);">$0</div>
+    </div>
+  `;
+  html += `</div>`;
+  return html;
+}
+
+function computeStoneValue(stone) {
+  const carats = parseFloat(stone.carats) || 0;
+  if (carats >= RAPAPORT_THRESHOLD_CT) {
+    return parseFloat(stone.manualValue) || 0;
+  }
+  const points = carats * 100;
+  const tierDef = DIAMOND_TIERS.find((t) => t.key === stone.tier) || DIAMOND_TIERS[1];
+  return points * tierDef.rate;
+}
+
+function recomputeSellableTotals() {
+  const s = state.sellable;
+  let total = 0;
+
+  if (s.metal) {
+    const weightInput = document.getElementById("sellableWeight");
+    const weight = parseFloat(weightInput ? weightInput.value : "0") || 0;
+    const metalValue = weight * sellableRates[s.metal];
+    total += metalValue;
+    const out = document.getElementById("metalValue");
+    if (out) out.textContent = fmt(metalValue);
+  }
+
+  s.stones.forEach((stone) => {
+    const value = computeStoneValue(stone);
+    total += value;
+    const out = document.getElementById(`sv_${stone.id}`);
+    if (out) out.textContent = fmt(value);
+  });
+
+  const totalEl = document.getElementById("sellableTotal");
+  if (totalEl) totalEl.textContent = fmt(total);
+}
+
 function comingSoonScreen(name, icon) {
   return `
     <div style="padding:60px 30px; text-align:center;">
@@ -449,6 +624,7 @@ function render() {
   else if (state.view === "jewelry") {
     if (state.jewelryStep === "menu") mainHtml = jewelryMenuScreen();
     else if (state.jewelryStep === "scrap") mainHtml = scrapJewelryScreen();
+    else if (state.jewelryStep === "sellable") mainHtml = sellableScreen();
     else mainHtml = comingSoonScreen("Jewelry", ICON_DIAMOND);
   }
 
@@ -524,6 +700,100 @@ function attachHandlers() {
       const cleaned = e.target.value.replace(/[^0-9.]/g, "");
       if (cleaned !== e.target.value) e.target.value = cleaned;
       recomputeScrapTotals();
+    };
+  });
+
+  document.querySelectorAll(".metalBtn").forEach((b) => {
+    b.onclick = () => { state.sellable.metal = b.dataset.metal; render(); };
+  });
+
+  const metalSettingsBtn = document.getElementById("metalSettingsBtn");
+  if (metalSettingsBtn) metalSettingsBtn.onclick = () => {
+    state.showMetalSettings = !state.showMetalSettings;
+    render();
+  };
+
+  const saveMetalRatesBtn = document.getElementById("saveMetalRatesBtn");
+  if (saveMetalRatesBtn) saveMetalRatesBtn.onclick = () => {
+    const newRates = {};
+    document.querySelectorAll(".metalRateInput").forEach((input) => {
+      const val = parseFloat(input.value);
+      if (!isNaN(val)) newRates[input.dataset.metal] = val;
+    });
+    saveMetalRates(newRates);
+    state.showMetalSettings = false;
+    render();
+  };
+
+  const sellableWeight = document.getElementById("sellableWeight");
+  if (sellableWeight) sellableWeight.oninput = (e) => {
+    const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+    if (cleaned !== e.target.value) e.target.value = cleaned;
+    state.sellable.weightDwt = cleaned;
+    recomputeSellableTotals();
+  };
+
+  const addStoneBtn = document.getElementById("addStoneBtn");
+  if (addStoneBtn) addStoneBtn.onclick = () => {
+    state.stoneIdCounter += 1;
+    state.sellable.stones.push({
+      id: state.stoneIdCounter,
+      carats: "",
+      tier: "decent",
+      manualValue: "",
+    });
+    render();
+  };
+
+  document.querySelectorAll("[data-remove-stone]").forEach((b) => {
+    b.onclick = () => {
+      const id = parseInt(b.dataset.removeStone, 10);
+      state.sellable.stones = state.sellable.stones.filter((s) => s.id !== id);
+      render();
+    };
+  });
+
+  document.querySelectorAll(".stoneCarats").forEach((input) => {
+    input.oninput = (e) => {
+      const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+      if (cleaned !== e.target.value) e.target.value = cleaned;
+      const id = parseInt(input.dataset.stone, 10);
+      const stone = state.sellable.stones.find((s) => s.id === id);
+      if (!stone) return;
+      const crossedThreshold =
+        (parseFloat(stone.carats) || 0) < RAPAPORT_THRESHOLD_CT &&
+        (parseFloat(cleaned) || 0) >= RAPAPORT_THRESHOLD_CT;
+      const crossedBack =
+        (parseFloat(stone.carats) || 0) >= RAPAPORT_THRESHOLD_CT &&
+        (parseFloat(cleaned) || 0) < RAPAPORT_THRESHOLD_CT;
+      stone.carats = cleaned;
+      if (crossedThreshold || crossedBack) {
+        // Switches between tier buttons and manual-value input, so the
+        // row needs to be redrawn rather than just recomputed.
+        render();
+      } else {
+        recomputeSellableTotals();
+      }
+    };
+  });
+
+  document.querySelectorAll(".stoneManualValue").forEach((input) => {
+    input.oninput = (e) => {
+      const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+      if (cleaned !== e.target.value) e.target.value = cleaned;
+      const id = parseInt(input.dataset.stone, 10);
+      const stone = state.sellable.stones.find((s) => s.id === id);
+      if (stone) stone.manualValue = cleaned;
+      recomputeSellableTotals();
+    };
+  });
+
+  document.querySelectorAll(".stoneTierBtn").forEach((b) => {
+    b.onclick = () => {
+      const id = parseInt(b.dataset.stone, 10);
+      const stone = state.sellable.stones.find((s) => s.id === id);
+      if (stone) stone.tier = b.dataset.tier;
+      render();
     };
   });
 
